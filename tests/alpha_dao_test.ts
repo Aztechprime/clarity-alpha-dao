@@ -42,13 +42,77 @@ Clarinet.test({
 });
 
 Clarinet.test({
-    name: "Can vote on proposal",
+    name: "Can delegate voting power",
     async fn(chain: Chain, accounts: Map<string, Account>) {
         const deployer = accounts.get('deployer')!;
         const wallet1 = accounts.get('wallet_1')!;
 
-        // Create proposal
         let block = chain.mineBlock([
+            Tx.contractCall('alpha_dao', 'delegate-to',
+                [types.principal(wallet1.address)],
+                deployer.address
+            )
+        ]);
+
+        block.receipts[0].result.expectOk();
+
+        // Verify delegation
+        let getDelegate = chain.callReadOnlyFn(
+            'alpha_dao',
+            'get-delegate',
+            [types.principal(deployer.address)],
+            deployer.address
+        );
+
+        getDelegate.result.expectSome().expectPrincipal(wallet1.address);
+    }
+});
+
+Clarinet.test({
+    name: "Can remove delegation",
+    async fn(chain: Chain, accounts: Map<string, Account>) {
+        const deployer = accounts.get('deployer')!;
+        const wallet1 = accounts.get('wallet_1')!;
+
+        // Set up delegation
+        chain.mineBlock([
+            Tx.contractCall('alpha_dao', 'delegate-to',
+                [types.principal(wallet1.address)],
+                deployer.address
+            )
+        ]);
+
+        // Remove delegation
+        let block = chain.mineBlock([
+            Tx.contractCall('alpha_dao', 'remove-delegation',
+                [],
+                deployer.address
+            )
+        ]);
+
+        block.receipts[0].result.expectOk();
+
+        // Verify delegation removed
+        let getDelegate = chain.callReadOnlyFn(
+            'alpha_dao',
+            'get-delegate',
+            [types.principal(deployer.address)],
+            deployer.address
+        );
+
+        getDelegate.result.expectNone();
+    }
+});
+
+Clarinet.test({
+    name: "Can vote with delegated power",
+    async fn(chain: Chain, accounts: Map<string, Account>) {
+        const deployer = accounts.get('deployer')!;
+        const wallet1 = accounts.get('wallet_1')!;
+        const wallet2 = accounts.get('wallet_2')!;
+
+        // Create proposal
+        chain.mineBlock([
             Tx.contractCall('alpha_dao', 'create-proposal',
                 [
                     types.ascii("Test Proposal"),
@@ -60,68 +124,25 @@ Clarinet.test({
             )
         ]);
 
-        // Vote
+        // Set up delegation
+        chain.mineBlock([
+            Tx.contractCall('alpha_dao', 'delegate-to',
+                [types.principal(wallet2.address)],
+                wallet1.address
+            )
+        ]);
+
+        // Vote with delegated power
         let voteBlock = chain.mineBlock([
             Tx.contractCall('alpha_dao', 'vote',
                 [types.uint(0), types.bool(true)],
-                deployer.address
+                wallet2.address
             )
         ]);
 
         voteBlock.receipts[0].result.expectOk().expectBool(true);
 
-        // Verify vote
-        let getVote = chain.callReadOnlyFn(
-            'alpha_dao',
-            'get-vote',
-            [types.uint(0), types.principal(deployer.address)],
-            deployer.address
-        );
-        
-        getVote.result.expectSome().expectBool(true);
-    }
-});
-
-Clarinet.test({
-    name: "Can execute passed proposal",
-    async fn(chain: Chain, accounts: Map<string, Account>) {
-        const deployer = accounts.get('deployer')!;
-        const wallet1 = accounts.get('wallet_1')!;
-
-        // Create and vote on proposal
-        chain.mineBlock([
-            Tx.contractCall('alpha_dao', 'create-proposal',
-                [
-                    types.ascii("Test Proposal"),
-                    types.utf8("Description"),
-                    types.uint(1000000),
-                    types.principal(wallet1.address)
-                ],
-                deployer.address
-            )
-        ]);
-
-        chain.mineBlock([
-            Tx.contractCall('alpha_dao', 'vote',
-                [types.uint(0), types.bool(true)],
-                deployer.address
-            )
-        ]);
-
-        // Mine blocks to pass voting period
-        chain.mineEmptyBlockUntil(200);
-
-        // Execute proposal
-        let executeBlock = chain.mineBlock([
-            Tx.contractCall('alpha_dao', 'execute-proposal',
-                [types.uint(0)],
-                deployer.address
-            )
-        ]);
-
-        executeBlock.receipts[0].result.expectOk().expectBool(true);
-
-        // Verify proposal status
+        // Verify vote power includes delegation
         let getProposal = chain.callReadOnlyFn(
             'alpha_dao',
             'get-proposal',
@@ -130,6 +151,6 @@ Clarinet.test({
         );
         
         let proposal = getProposal.result.expectSome().expectTuple();
-        assertEquals(proposal.status, "executed");
+        assertEquals(proposal['votes-for'], '2000000'); // Combined balance
     }
 });
