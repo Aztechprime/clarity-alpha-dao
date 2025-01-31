@@ -14,6 +14,8 @@
 (define-constant err-proposal-not-found (err u102))
 (define-constant err-proposal-expired (err u103))
 (define-constant err-already-voted (err u104))
+(define-constant err-no-delegation (err u105))
+(define-constant err-delegation-cycle (err u106))
 
 ;; Proposal status
 (define-data-var proposal-count uint u0)
@@ -39,9 +41,40 @@
     bool
 )
 
+;; New delegation mapping
+(define-map delegations
+    principal  ;; delegator
+    principal  ;; delegate
+)
+
 ;; Initialize contract
 (begin
     (try! (ft-mint? dao-token u1000000 contract-owner))
+)
+
+;; Delegate voting power
+(define-public (delegate-to (delegate-to principal))
+    (begin
+        (asserts! (not (is-eq tx-sender delegate-to)) err-delegation-cycle)
+        (asserts! (check-delegation-cycle delegate-to) err-delegation-cycle)
+        (ok (map-set delegations tx-sender delegate-to))
+    )
+)
+
+;; Remove delegation
+(define-public (remove-delegation)
+    (ok (map-delete delegations tx-sender))
+)
+
+;; Helper to check for delegation cycles
+(define-private (check-delegation-cycle (delegate principal))
+    (let ((current-delegate delegate))
+        (asserts! (not (is-eq current-delegate tx-sender)) true)
+        (match (map-get? delegations current-delegate)
+            delegate-of-delegate (check-delegation-cycle delegate-of-delegate)
+            true
+        )
+    )
 )
 
 ;; Create a new proposal
@@ -70,12 +103,13 @@
     )
 )
 
-;; Vote on a proposal
+;; Vote on a proposal (with delegation support)
 (define-public (vote (proposal-id uint) (vote-for bool))
     (let
         (
             (proposal (unwrap! (map-get? proposals proposal-id) err-proposal-not-found))
             (voter-balance (ft-get-balance dao-token tx-sender))
+            (total-balance (+ voter-balance (get-delegated-balance tx-sender)))
         )
         (asserts! (not (is-some (map-get? votes {proposal-id: proposal-id, voter: tx-sender}))) err-already-voted)
         (asserts! (< block-height (get end-block proposal)) err-proposal-expired)
@@ -83,10 +117,33 @@
         (map-set votes {proposal-id: proposal-id, voter: tx-sender} vote-for)
         
         (if vote-for
-            (map-set proposals proposal-id (merge proposal {votes-for: (+ (get votes-for proposal) voter-balance)}))
-            (map-set proposals proposal-id (merge proposal {votes-against: (+ (get votes-against proposal) voter-balance)}))
+            (map-set proposals proposal-id (merge proposal {votes-for: (+ (get votes-for proposal) total-balance)}))
+            (map-set proposals proposal-id (merge proposal {votes-against: (+ (get votes-against proposal) total-balance)}))
         )
         (ok true)
+    )
+)
+
+;; Get delegated balance for a principal
+(define-private (get-delegated-balance (delegate principal))
+    (fold + (get-delegations-to delegate) u0)
+)
+
+;; Get list of balances delegated to a principal
+(define-private (get-delegations-to (delegate principal))
+    (map ft-get-balance dao-token (get-delegators delegate))
+)
+
+;; Get list of principals who delegated to someone
+(define-private (get-delegators (delegate principal))
+    (filter delegated-to? (ft-get-holders dao-token))
+)
+
+;; Check if principal delegated to delegate
+(define-private (delegated-to? (delegator principal))
+    (match (map-get? delegations delegator)
+        delegate-addr (is-eq delegate-addr delegate)
+        false
     )
 )
 
@@ -127,4 +184,8 @@
 
 (define-read-only (get-member-balance (member principal))
     (ok (ft-get-balance dao-token member))
+)
+
+(define-read-only (get-delegate (delegator principal))
+    (map-get? delegations delegator)
 )
